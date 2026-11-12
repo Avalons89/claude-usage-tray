@@ -201,21 +201,68 @@ fn set_choice(app: &AppHandle, key: &str, on: bool) {
 }
 
 /// Windows lets the taskbar and other always-on-top windows cover the strip until it is raised again.
-// ponytail: polls every second; hook foreground changes with SetWinEventHook if the lag ever matters.
+/// It is raised as soon as another window comes to the front, such as the taskbar when clicked,
+/// and once a second for windows that appear on top without taking focus.
 #[cfg(windows)]
 fn keep_raised(app: AppHandle) {
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, EVENT_SYSTEM_FOREGROUND, MSG, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    };
+    let _ = RAISE_APP.set(app.clone());
+    std::thread::spawn(move || loop {
+        std::thread::sleep(RAISE_EVERY);
+        raise_strip(&app);
+    });
+    // SAFETY: the callback only reads RAISE_APP. Out-of-context hooks are delivered through this
+    // thread's message loop, which runs for the life of the app.
+    unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(on_foreground),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        );
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+/// WinEvent callbacks carry no context, so the hook finds the app here.
+#[cfg(windows)]
+static RAISE_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
+unsafe extern "system" fn on_foreground(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _event: u32,
+    _hwnd: windows::Win32::Foundation::HWND,
+    _object: i32,
+    _child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    if let Some(app) = RAISE_APP.get() {
+        raise_strip(app);
+    }
+}
+
+#[cfg(windows)]
+fn raise_strip(app: &AppHandle) {
     use windows::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     };
-    loop {
-        std::thread::sleep(RAISE_EVERY);
-        let on_top = app.state::<Shared>().settings.lock().map(|choices| choices[settings::KEEP_ON_TOP.0]).unwrap_or(false);
-        let shown = app.get_webview_window("main").filter(|w| on_top && w.is_visible().unwrap_or(false));
-        if let Some(hwnd) = shown.and_then(|w| w.hwnd().ok()) {
-            // SAFETY: the handle belongs to the live strip window, and the call only changes its z-order.
-            unsafe {
-                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
-            }
+    let on_top = app.state::<Shared>().settings.lock().map(|choices| choices[settings::KEEP_ON_TOP.0]).unwrap_or(false);
+    let shown = app.get_webview_window("main").filter(|w| on_top && w.is_visible().unwrap_or(false));
+    if let Some(hwnd) = shown.and_then(|w| w.hwnd().ok()) {
+        // SAFETY: the handle belongs to the live strip window, and the call only changes its z-order.
+        unsafe {
+            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
         }
     }
 }
