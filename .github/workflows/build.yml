@@ -22,9 +22,7 @@ jobs:
           # Built on Ubuntu 24.04, so the packages need glibc 2.39 or newer.
           - runner: [self-hosted, linux, x64]
             args: --bundles deb,appimage
-          # Only a Mac can build the Mac app. One app for both Apple silicon and Intel.
-          - runner: macos-latest
-            args: --target universal-apple-darwin --bundles app,dmg
+    # The Mac app builds on Codemagic (codemagic.yaml) into the same release.
     runs-on: ${{ matrix.runner }}
     env:
       # The server has no FUSE, which the AppImage tools otherwise need.
@@ -41,7 +39,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+          targets: x86_64-pc-windows-msvc
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -57,10 +55,8 @@ jobs:
 
       - run: npm ci
 
-      # Every commit on main gets a higher version, so installed copies see it as an update.
       - name: Version from commit count
-        shell: bash
-        run: node -e "const fs=require('fs'),f='src-tauri/tauri.conf.json',c=JSON.parse(fs.readFileSync(f));c.version='0.1.'+process.argv[1];fs.writeFileSync(f,JSON.stringify(c,null,2))" "$(git rev-list --count HEAD)"
+        run: node scripts/set-version.mjs
 
       # Builds, signs the update files and adds them and latest.json to the release.
       - uses: tauri-apps/tauri-action@v1

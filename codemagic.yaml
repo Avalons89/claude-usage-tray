@@ -1,0 +1,40 @@
+# The Mac app, built on Codemagic's free Mac minutes. Windows and Linux build on contabo-build
+# (.github/workflows/build.yml) into the same GitHub release.
+workflows:
+  macos-release:
+    name: macOS release
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      # Secure variables set in Codemagic: TAURI_SIGNING_PRIVATE_KEY, and GH_TOKEN with
+      # Contents read and write on this repo.
+      groups:
+        - release
+      node: lts
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+      cancel_previous_builds: true
+    cache:
+      cache_paths:
+        - ~/.cargo/registry
+        - $CM_BUILD_DIR/src-tauri/target
+    scripts:
+      - name: Rust
+        script: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          ~/.cargo/bin/rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          echo "PATH=$HOME/.cargo/bin:$PATH" >> $CM_ENV
+      - name: Version from commit count
+        script: |
+          git fetch --unshallow --quiet || true
+          node scripts/set-version.mjs
+      - name: Build
+        script: |
+          npm ci
+          npx tauri build --ci --target universal-apple-darwin --bundles app,dmg
+      - name: Publish to the GitHub release
+        script: bash scripts/publish-mac.sh
