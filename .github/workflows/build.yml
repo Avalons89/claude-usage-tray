@@ -15,25 +15,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            args: --bundles nsis
-          # One app for both Apple silicon and Intel Macs.
-          - os: macos-latest
-            args: --target universal-apple-darwin --bundles app,dmg
-          # The oldest supported Ubuntu, so the packages run on more distros.
-          - os: ubuntu-22.04
+          # contabo-build has the Linux libraries, NSIS and LLVM installed system-wide.
+          # It cross-compiles the Windows installer, which Tauri marks experimental.
+          - runner: [self-hosted, linux, x64]
+            args: --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis
+          # Built on Ubuntu 24.04, so the packages need glibc 2.39 or newer.
+          - runner: [self-hosted, linux, x64]
             args: --bundles deb,appimage
-    runs-on: ${{ matrix.os }}
+          # Only a Mac can build the Mac app. One app for both Apple silicon and Intel.
+          - runner: macos-latest
+            args: --target universal-apple-darwin --bundles app,dmg
+    runs-on: ${{ matrix.runner }}
+    env:
+      # The server has no FUSE, which the AppImage tools otherwise need.
+      APPIMAGE_EXTRACT_AND_RUN: 1
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Linux build libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils
 
       - uses: actions/setup-node@v6
         with:
@@ -42,11 +41,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+
+      - name: cargo-xwin
+        if: contains(matrix.args, 'cargo-xwin')
+        run: cargo xwin --version || cargo install --locked cargo-xwin
 
       - name: Tests
         run: cargo test
