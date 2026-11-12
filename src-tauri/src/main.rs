@@ -14,12 +14,14 @@ use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, WebviewWindow, WindowEvent, Wry};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 // Local logs only; the plan limits follow account::CHECK_EVERY.
 const REFRESH_EVERY: Duration = Duration::from_secs(60);
+const UPDATE_EVERY: Duration = Duration::from_secs(60 * 60);
 // Windows cuts tray tooltips at 127 characters.
 const TOOLTIP_MAX: usize = 127;
 const AUTOSTART_LABEL: &str = if cfg!(windows) { "Start with Windows" } else { "Open at login" };
@@ -36,6 +38,7 @@ struct Snapshot {
 struct Shared {
     latest: Mutex<Option<Snapshot>>,
     wake: mpsc::Sender<()>,
+    check_update: mpsc::Sender<()>,
 }
 
 #[tauri::command]
@@ -58,6 +61,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::POSITION).build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![snapshot, fit, start_drag])
         .on_window_event(|window, event| match event {
             // ponytail: saves on every move event while dragging; debounce if the disk writes ever matter.
@@ -75,23 +79,28 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let (wake, woken) = mpsc::channel();
-            app.manage(Shared { latest: Mutex::new(None), wake });
-            let tray = build_tray(app.handle())?;
+            let (check_update, update_asked) = mpsc::channel();
+            app.manage(Shared { latest: Mutex::new(None), wake, check_update });
+            let update_item = MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
+            let tray = build_tray(app.handle(), &update_item)?;
             let handle = app.handle().clone();
             std::thread::spawn(move || refresh_loop(handle, tray, woken));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || update_loop(handle, update_item, update_asked));
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("failed to start Claude usage");
 }
 
-fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
+fn build_tray(app: &AppHandle, update_item: &MenuItem<Wry>) -> tauri::Result<TrayIcon> {
     let toggle = MenuItem::with_id(app, "toggle", "Show or hide the strip", true, None::<&str>)?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh now", true, None::<&str>)?;
     let starts_at_login = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart = CheckMenuItem::with_id(app, "autostart", AUTOSTART_LABEL, true, starts_at_login, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &refresh, &autostart, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&toggle, &refresh, &autostart, update_item, &separator, &quit])?;
 
     TrayIconBuilder::with_id("usage")
         .icon(icon(None))
@@ -102,6 +111,9 @@ fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
             "toggle" => toggle_window(app),
             "refresh" => {
                 let _ = app.state::<Shared>().wake.send(());
+            }
+            "update" => {
+                let _ = app.state::<Shared>().check_update.send(());
             }
             "autostart" => {
                 let launcher = app.autolaunch();
@@ -169,6 +181,45 @@ fn refresh_loop(app: AppHandle, tray: TrayIcon, woken: mpsc::Receiver<()>) {
 
         if let Err(RecvTimeoutError::Disconnected) = woken.recv_timeout(REFRESH_EVERY) {
             return;
+        }
+    }
+}
+
+/// Checks at launch, every hour and from the tray menu. Debug builds only check when asked,
+/// so a dev copy doesn't replace itself with the published release.
+fn update_loop(app: AppHandle, item: MenuItem<Wry>, asked: mpsc::Receiver<()>) {
+    let automatic = !cfg!(debug_assertions);
+    let mut due = automatic;
+    loop {
+        if due {
+            let label = tauri::async_runtime::block_on(install_update(&app, &item));
+            let _ = item.set_text(label);
+        }
+        due = match asked.recv_timeout(UPDATE_EVERY) {
+            Ok(()) => true,
+            Err(RecvTimeoutError::Timeout) => automatic,
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+    }
+}
+
+/// Installs a newer release and restarts into it. Returns the menu label when nothing was installed.
+/// On Windows the installer closes the app itself and starts the new version.
+async fn install_update(app: &AppHandle, item: &MenuItem<Wry>) -> String {
+    let _ = item.set_text("Checking for updates…");
+    let found = match app.updater() {
+        Ok(updater) => updater.check().await,
+        Err(error) => Err(error),
+    };
+    match found {
+        Ok(None) => format!("Up to date (v{})", app.package_info().version),
+        Err(_) => "Couldn't check for updates. Try again".into(),
+        Ok(Some(update)) => {
+            let _ = item.set_text(format!("Installing v{}…", update.version));
+            match update.download_and_install(|_, _| {}, || {}).await {
+                Ok(()) => app.restart(),
+                Err(_) => "Update failed. Try again".into(),
+            }
         }
     }
 }
