@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Claude usage</title>
+<style>
+  /* Dark by default because the strip floats over the taskbar and code editors; Windows light mode gets its own set. */
+  :root {
+    color-scheme: dark light;
+    --bg: #1c1c1f; --text: #ececee; --dim: #a6a6ad; --line: #34343a; --track: #3a3a40;
+    --ok: #57c08a; --warn: #e5bb4b; --high: #f07a6c; --focus: #9cc0ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fafaf8; --text: #1d1d1f; --dim: #55555c; --line: #dcdcd8; --track: #e4e4e0;
+      --ok: #23774a; --warn: #855d00; --high: #b3372a; --focus: #1f4fbf;
+    }
+  }
+  html, body { margin: 0; background: transparent; overflow: hidden; }
+  /* Segoe UI matches the taskbar and tray the strip sits next to. */
+  body { font: 12px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; color: var(--text); user-select: none; }
+  #app { width: max-content; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-variant-numeric: tabular-nums; }
+  #strip { all: unset; box-sizing: border-box; display: flex; gap: 16px; align-items: baseline; padding: 6px 14px; white-space: nowrap; }
+  #strip:focus-visible { outline: 2px solid var(--focus); outline-offset: -3px; border-radius: 11px; }
+  #card { padding: 8px 14px 10px; border-top: 1px solid var(--line); }
+  b { font-weight: 600; }
+  .dim { color: var(--dim); }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
+  .high { color: var(--high); }
+  .limit { display: flex; flex-wrap: wrap; justify-content: space-between; column-gap: 16px; margin-bottom: 8px; }
+  .bar { flex-basis: 100%; height: 6px; margin-top: 3px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 3px; background: currentColor; }
+  .group { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px; }
+  .row { display: flex; justify-content: space-between; gap: 16px; }
+  .detail { font-size: 11px; }
+</style>
+</head>
+<body>
+  <div id="app">
+    <button id="strip" type="button" aria-expanded="false" aria-controls="card" title="Click for details, drag to move">
+      <span class="dim">Reading Claude Code logs…</span>
+    </button>
+    <div id="card" hidden></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
