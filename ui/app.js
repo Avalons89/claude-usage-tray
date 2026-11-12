@@ -7,7 +7,6 @@ const card = document.getElementById('card');
 
 const DRAG_THRESHOLD_PX = 4;
 const MODELS_SHOWN = 3;
-const ALWAYS_IN_STRIP = ['session', 'weekly_all'];
 const LIMIT_HELP = {
   session: 'Share of your 5-hour session limit used, across claude.ai and every device',
   weekly_all: 'Share of your weekly limit used, all models',
@@ -16,6 +15,10 @@ const LIMIT_HELP = {
 const tokenFormat = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 const dollarFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const dayAndTime = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+
+// The tray menu's ticks, keyed as in settings.rs.
+let settings = null;
+let latest = null;
 
 const tok = (n) => tokenFormat.format(n);
 const usd = (n) => dollarFormat.format(n);
@@ -47,28 +50,39 @@ function resetText(limit) {
   return `resets in ${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
 }
 
+function onStrip(limit) {
+  if (limit.kind === 'session') return settings.session;
+  if (limit.kind === 'weekly_all') return settings.week;
+  return settings.model_weeks && limit.level === 'high';
+}
+
 function renderStrip(snap) {
   const items = [];
   const limits = snap.account?.limits ?? [];
-  for (const limit of limits.filter((l) => ALWAYS_IN_STRIP.includes(l.kind) || l.level === 'high')) {
+  for (const limit of limits.filter(onStrip)) {
     const item = node('span', null, null, limitHelp(limit));
     item.append(node('b', `${limit.label} ${Math.round(limit.percent)}%`, limit.level));
     if (limit.kind === 'session') item.append(' ', node('span', resetText(limit), 'dim'));
     items.push(item);
   }
-  if (snap.account_error) {
+  if (snap.account_error && (settings.session || settings.week || settings.model_weeks)) {
     items.push(node('span', snap.account ? 'Account numbers stale' : 'Account unavailable', 'warn', snap.account_error));
   }
 
   const usage = snap.usage;
   const total = totalTokens(usage.today);
-  items.push(total === 0
-    ? node('span', 'Today: no Claude Code use yet', 'dim', 'Counted from the Claude Code logs on this PC')
-    : node('span', `Today ${tok(total)} tok · ${usd(usage.cost_today)}`, null,
-      'Tokens Claude Code used on this PC since midnight, and what they would cost at API prices'));
-  if (usage.burn_per_minute > 0) {
+  if (settings.today) {
+    items.push(total === 0
+      ? node('span', 'Today: no Claude Code use yet', 'dim', 'Counted from the Claude Code logs on this PC')
+      : node('span', `Today ${tok(total)} tok · ${usd(usage.cost_today)}`, null,
+        'Tokens Claude Code used on this PC since midnight, and what they would cost at API prices'));
+  }
+  if (settings.burn && usage.burn_per_minute > 0) {
     items.push(node('span', `Burn ${tok(usage.burn_per_minute)} tok/min`, null,
       'Tokens per minute over the last 15 minutes, cache reads included'));
+  }
+  if (items.length === 0) {
+    items.push(node('span', 'Claude usage', 'dim', 'Pick what to show under Show on strip in the tray menu'));
   }
   strip.replaceChildren(...items);
 }
@@ -130,6 +144,7 @@ function renderCard(snap) {
 }
 
 function render(snap) {
+  latest = snap;
   renderStrip(snap);
   renderCard(snap);
 }
@@ -167,5 +182,12 @@ new ResizeObserver(() => {
   invoke('fit', { width: Math.ceil(box.width), height: Math.ceil(box.height) });
 }).observe(app);
 
-listen('snapshot', (event) => render(event.payload));
-invoke('snapshot').then((snap) => snap && render(snap));
+invoke('get_settings').then((saved) => {
+  settings = saved;
+  listen('settings', (event) => {
+    settings = event.payload;
+    if (latest) renderStrip(latest);
+  });
+  listen('snapshot', (event) => render(event.payload));
+  return invoke('snapshot');
+}).then((snap) => snap && render(snap));

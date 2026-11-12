@@ -16,3 +16,7 @@ serde_json = "1"
 chrono = "0.4"
 ureq = "2"
 tauri-plugin-updater = "2"
+
+# Raises the strip back over the taskbar. Same version as Tauri's, so window.hwnd() fits.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
