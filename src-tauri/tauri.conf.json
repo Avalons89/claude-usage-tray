@@ -41,7 +41,8 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBNUE5QUI1MTlENTA2MjIKUldRaUJ0VVp0WnBhZWxldkYrMG83UjVXSjRCcUFtSWNqK3NKZi9tenJDclQzKzVwUksralBhdkEK",
-      "endpoints": ["https://github.com/Avalons89/claude-usage-tray/releases/latest/download/latest.json"]
+      "endpoints": ["https://github.com/Avalons89/claude-usage-tray/releases/latest/download/latest.json"],
+      "windows": { "installMode": "quiet" }
     }
   }
 }
