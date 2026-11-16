@@ -14,6 +14,7 @@ pub const STRIP: [(&str, &str, bool); 5] = [
     ("today", "Today", true),
     ("burn", "Burn rate", true),
 ];
+pub const ISLAND: (&str, &str, bool) = ("island", "Island style", false);
 pub const KEEP_ON_TOP: (&str, &str, bool) = ("keep_on_top", "Keep on top", true);
 pub const LOCKED: (&str, &str, bool) = ("locked", "Lock position", false);
 
@@ -34,7 +35,7 @@ fn parse(saved: &str) -> Settings {
     let saved: Settings = serde_json::from_str(saved).unwrap_or_default();
     STRIP
         .iter()
-        .chain([&KEEP_ON_TOP, &LOCKED])
+        .chain([&ISLAND, &KEEP_ON_TOP, &LOCKED])
         .map(|&(key, _, default)| (key.to_string(), saved.get(key).copied().unwrap_or(default)))
         .collect()
 }
@@ -57,6 +58,7 @@ mod tests {
     fn an_unreadable_file_gives_the_defaults() {
         let settings = parse("not json");
         assert!(settings["model_weeks"]);
+        assert!(!settings["island"]);
         assert!(!settings["locked"]);
     }
 }

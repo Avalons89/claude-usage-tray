@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, WebviewWindow, WindowEvent, Wry};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent, Wry};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -28,6 +28,10 @@ const RAISE_EVERY: Duration = Duration::from_secs(1);
 // Windows cuts tray tooltips at 127 characters.
 const TOOLTIP_MAX: usize = 127;
 const AUTOSTART_LABEL: &str = if cfg!(windows) { "Start with Windows" } else { "Open at login" };
+const ISLAND_TOP_GAP_PX: f64 = 8.0;
+// Size is saved with the position because the island resizes around its middle:
+// its saved left edge only puts it back in place at the width it had.
+const SAVED_STATE: StateFlags = StateFlags::POSITION.union(StateFlags::SIZE);
 
 #[derive(Serialize, Clone)]
 struct Snapshot {
@@ -57,9 +61,42 @@ fn get_settings(shared: tauri::State<Shared>) -> settings::Settings {
 }
 
 /// The page measures itself and the window follows, so folding and unfolding resize it.
+/// The island keeps its middle where it is and grows to both sides, like the iPhone's.
 #[tauri::command]
-fn fit(window: WebviewWindow, width: f64, height: f64) {
-    let _ = window.set_size(LogicalSize::new(width, height));
+fn fit(window: WebviewWindow, shared: tauri::State<Shared>, width: f64, height: f64) {
+    let island = shared.settings.lock().map(|choices| choices[settings::ISLAND.0]).unwrap_or(false);
+    if !island {
+        let _ = window.set_size(LogicalSize::new(width, height));
+        return;
+    }
+    let (Ok(scale), Ok(at), Ok(old)) = (window.scale_factor(), window.outer_position(), window.outer_size()) else { return };
+    let size: PhysicalSize<u32> = LogicalSize::new(width, height).to_physical(scale);
+    let x = at.x + (old.width as i32 - size.width as i32) / 2;
+    set_bounds(&window, PhysicalPosition::new(x, at.y), size);
+}
+
+/// One move-and-resize on Windows, so a growing island doesn't jump sideways for a frame in between.
+fn set_bounds(window: &WebviewWindow, at: PhysicalPosition<i32>, size: PhysicalSize<u32>) {
+    #[cfg(windows)]
+    if let Ok(hwnd) = window.hwnd() {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+        // SAFETY: the handle belongs to the live strip window, and the call only moves and resizes it.
+        unsafe {
+            let _ = SetWindowPos(hwnd, None, at.x, at.y, size.width as i32, size.height as i32, SWP_NOACTIVATE | SWP_NOZORDER);
+        }
+        return;
+    }
+    let _ = window.set_position(at);
+    let _ = window.set_size(size);
+}
+
+/// Where an iPhone keeps its island: the middle of the top edge of the screen the strip is on.
+fn move_to_top_center(window: &WebviewWindow) {
+    let (Ok(Some(screen)), Ok(size)) = (window.current_monitor(), window.outer_size()) else { return };
+    let area = screen.work_area();
+    let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
+    let y = area.position.y + (ISLAND_TOP_GAP_PX * screen.scale_factor()).round() as i32;
+    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 #[tauri::command]
@@ -73,13 +110,13 @@ fn start_drag(window: WebviewWindow, shared: tauri::State<Shared>) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
-        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::POSITION).build())
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(SAVED_STATE).build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![snapshot, get_settings, fit, start_drag])
         .on_window_event(|window, event| match event {
             // ponytail: saves on every move event while dragging; debounce if the disk writes ever matter.
             WindowEvent::Moved(_) => {
-                let _ = window.app_handle().save_window_state(StateFlags::POSITION);
+                let _ = window.app_handle().save_window_state(SAVED_STATE);
             }
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
@@ -97,6 +134,17 @@ fn main() {
             let choices = settings::load(&settings_path);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_always_on_top(choices[settings::KEEP_ON_TOP.0])?;
+                // Versions before SAVED_STATE saved no size, so their state restores a 0x0 window,
+                // which never lays out and so never fits itself.
+                let restored = window.inner_size()?;
+                if restored.width == 0 || restored.height == 0 {
+                    if let Some(config) = app.config().app.windows.first() {
+                        // Growing from 0x0 shifts the window, so it goes back to where it was restored.
+                        let at = window.outer_position()?;
+                        window.set_size(LogicalSize::new(config.width, config.height))?;
+                        window.set_position(at)?;
+                    }
+                }
             }
             app.manage(Shared { latest: Mutex::new(None), wake, check_update, settings: Mutex::new(choices), settings_path });
             let update_item = MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
@@ -130,6 +178,7 @@ fn build_tray(app: &AppHandle, update_item: &MenuItem<Wry>) -> tauri::Result<Tra
     let strip_ticks = settings::STRIP.iter().map(tick).collect::<tauri::Result<Vec<_>>>()?;
     let strip_items: Vec<&dyn IsMenuItem<Wry>> = strip_ticks.iter().map(|t| t as &dyn IsMenuItem<Wry>).collect();
     let show_on_strip = Submenu::with_items(app, "Show on strip", true, &strip_items)?;
+    let island = tick(&settings::ISLAND)?;
     let keep_on_top = tick(&settings::KEEP_ON_TOP)?;
     let locked = tick(&settings::LOCKED)?;
     let separator = || PredefinedMenuItem::separator(app);
@@ -140,6 +189,7 @@ fn build_tray(app: &AppHandle, update_item: &MenuItem<Wry>) -> tauri::Result<Tra
             &refresh,
             &separator()?,
             &show_on_strip,
+            &island,
             &keep_on_top,
             &locked,
             &separator()?,
@@ -149,7 +199,7 @@ fn build_tray(app: &AppHandle, update_item: &MenuItem<Wry>) -> tauri::Result<Tra
             &quit,
         ],
     )?;
-    let ticks: Vec<CheckMenuItem<Wry>> = strip_ticks.into_iter().chain([keep_on_top, locked]).collect();
+    let ticks: Vec<CheckMenuItem<Wry>> = strip_ticks.into_iter().chain([island, keep_on_top, locked]).collect();
 
     TrayIconBuilder::with_id("usage")
         .icon(icon(None))
@@ -170,7 +220,7 @@ fn build_tray(app: &AppHandle, update_item: &MenuItem<Wry>) -> tauri::Result<Tra
                 let _ = autostart.set_checked(launcher.is_enabled().unwrap_or(false));
             }
             "quit" => {
-                let _ = app.save_window_state(StateFlags::POSITION);
+                let _ = app.save_window_state(SAVED_STATE);
                 app.exit(0);
             }
             id => {
@@ -195,6 +245,11 @@ fn set_choice(app: &AppHandle, key: &str, on: bool) {
     if key == settings::KEEP_ON_TOP.0 {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.set_always_on_top(on);
+        }
+    }
+    if key == settings::ISLAND.0 && on {
+        if let Some(window) = app.get_webview_window("main") {
+            move_to_top_center(&window);
         }
     }
     let _ = app.emit("settings", &*choices);

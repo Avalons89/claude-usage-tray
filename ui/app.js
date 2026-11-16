@@ -7,6 +7,10 @@ const card = document.getElementById('card');
 
 const DRAG_THRESHOLD_PX = 4;
 const MODELS_SHOWN = 3;
+// Opening starts fast and eases into place; closing is quicker so the island gets out of the way.
+const OPEN_MORPH = { duration: 380, easing: 'cubic-bezier(.2, .9, .3, 1)' };
+const CLOSE_MORPH = { duration: 240, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' };
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const LIMIT_HELP = {
   session: 'Share of your 5-hour session limit used, across claude.ai and every device',
   weekly_all: 'Share of your weekly limit used, all models',
@@ -56,10 +60,18 @@ function onStrip(limit) {
   return settings.model_weeks && limit.level === 'high';
 }
 
+function ring(limit) {
+  const el = node('i', null, `ring ${limit.level}`);
+  el.style.setProperty('--p', Math.min(100, limit.percent));
+  el.setAttribute('aria-hidden', 'true');
+  return el;
+}
+
 function renderStrip(snap) {
   const items = [];
   const limits = snap.account?.limits ?? [];
   for (const limit of limits.filter(onStrip)) {
+    if (settings.island && limit.kind === 'session') items.push(ring(limit));
     const item = node('span', null, null, limitHelp(limit));
     item.append(node('b', `${limit.label} ${Math.round(limit.percent)}%`, limit.level));
     if (limit.kind === 'session') item.append(' ', node('span', resetText(limit), 'dim'));
@@ -149,9 +161,40 @@ function render(snap) {
   renderCard(snap);
 }
 
+let morphs = [];
+
+const isOpen = () => strip.getAttribute('aria-expanded') === 'true';
+
 function setOpen(open) {
-  card.hidden = !open;
+  if (open === isOpen()) return;
   strip.setAttribute('aria-expanded', String(open));
+  morphs.forEach((animation) => animation.cancel());
+  if (settings?.island && !reducedMotion.matches) {
+    morphIsland(open);
+  } else {
+    card.hidden = !open;
+  }
+}
+
+// The island grows out of its pill and folds back into it. Only the clip animates: the window
+// resizes once per open or close, and the page stays centered in it while it catches up.
+function morphIsland(open) {
+  card.hidden = false;
+  const box = app.getBoundingClientRect();
+  const pill = strip.getBoundingClientRect();
+  const pillShape = `inset(0 ${box.right - pill.right}px ${box.bottom - pill.bottom}px ${pill.left - box.left}px round ${pill.height / 2}px)`;
+  const fullShape = `inset(0 round ${getComputedStyle(app).borderTopLeftRadius})`;
+  const timing = open ? OPEN_MORPH : CLOSE_MORPH;
+  const running = [
+    app.animate({ clipPath: open ? [pillShape, fullShape] : [fullShape, pillShape] }, timing),
+    card.animate({ opacity: open ? [0, 1] : [1, 0] }, timing),
+  ];
+  morphs = running;
+  if (open) return;
+  Promise.all(running.map((animation) => animation.finished)).then(() => {
+    card.hidden = true;
+    running.forEach((animation) => animation.cancel());
+  }, () => {});
 }
 
 // A press that moves hands the window to the OS for dragging; a press that doesn't is a click.
@@ -171,7 +214,7 @@ strip.addEventListener('mouseup', () => { press = null; });
 strip.addEventListener('click', (e) => {
   // detail is 0 for Enter and Space, which never follow a drag.
   if (e.detail > 0 && dragged) return;
-  setOpen(card.hidden);
+  setOpen(!isOpen());
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') setOpen(false);
@@ -182,12 +225,15 @@ new ResizeObserver(() => {
   invoke('fit', { width: Math.ceil(box.width), height: Math.ceil(box.height) });
 }).observe(app);
 
+function applySettings(choices) {
+  settings = choices;
+  document.body.classList.toggle('island', settings.island);
+  if (latest) renderStrip(latest);
+}
+
 invoke('get_settings').then((saved) => {
-  settings = saved;
-  listen('settings', (event) => {
-    settings = event.payload;
-    if (latest) renderStrip(latest);
-  });
+  applySettings(saved);
+  listen('settings', (event) => applySettings(event.payload));
   listen('snapshot', (event) => render(event.payload));
   return invoke('snapshot');
 }).then((snap) => snap && render(snap));

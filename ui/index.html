@@ -34,6 +34,25 @@
   .group { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px; }
   .row { display: flex; justify-content: space-between; gap: 16px; }
   .detail { font-size: 11px; }
+
+  /* Island style: a black pill at the top of the screen that grows into the card, after the iPhone's Dynamic Island.
+     Black in light mode too, so it reads as part of the screen edge rather than as a window. */
+  body.island {
+    display: flex; justify-content: center; color-scheme: dark;
+    --bg: #000; --text: #f5f5f7; --dim: #a1a1a8; --line: #2a2a2f; --track: #3a3a40;
+    --ok: #57c08a; --warn: #e5bb4b; --high: #f07a6c; --focus: #9cc0ff;
+  }
+  /* flex: none keeps the island at its own size while the window catches up, centered over it. */
+  .island #app { flex: none; border: 0; border-radius: 22px; }
+  .island #app:has(#card[hidden]) { border-radius: 999px; }
+  .island #strip { width: max-content; margin-inline: auto; gap: 12px; padding: 8px 16px; }
+  .island #strip:focus-visible { border-radius: 999px; }
+  .island #card { border-top: 0; padding: 2px 18px 14px; }
+  .ring {
+    flex: none; align-self: center; width: 14px; height: 14px; border-radius: 50%;
+    background: conic-gradient(currentColor calc(var(--p) * 1%), var(--track) 0);
+    mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  }
 </style>
 </head>
 <body>
