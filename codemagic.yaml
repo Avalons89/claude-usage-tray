@@ -36,5 +36,22 @@ workflows:
         script: |
           npm ci
           npx tauri build --ci --target universal-apple-darwin --bundles app,dmg
+      # A Mac app that quits within 20 seconds of starting is never published.
+      # The screenshot shows how the menu bar icon and the strip look on this Mac.
+      - name: Launch test
+        script: |
+          app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Claude Usage.app"
+          "$app/Contents/MacOS/claude-usage" >launch.log 2>&1 &
+          pid=$!
+          sleep 20
+          screencapture -x launch.png || true
+          if ! kill "$pid" 2>/dev/null; then
+            echo "Claude Usage quit within 20 seconds of starting:"
+            cat launch.log
+            exit 1
+          fi
       - name: Publish to the GitHub release
         script: bash scripts/publish-mac.sh
+    artifacts:
+      - launch.png
+      - launch.log
