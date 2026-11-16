@@ -17,6 +17,7 @@ use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem,
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent, Wry};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
@@ -112,6 +113,7 @@ fn main() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(SAVED_STATE).build())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![snapshot, get_settings, fit, start_drag])
         .on_window_event(|window, event| match event {
             // ponytail: saves on every move event while dragging; debounce if the disk writes ever matter.
@@ -404,6 +406,12 @@ async fn install_update(app: &AppHandle, item: &MenuItem<Wry>) -> String {
         Err(_) => "Couldn't check for updates. Try again".into(),
         Ok(Some(update)) => {
             let _ = item.set_text(format!("Installing v{}…", update.version));
+            let _ = app
+                .notification()
+                .builder()
+                .title(format!("Updating to v{}", update.version))
+                .body("It restarts by itself in a moment.")
+                .show();
             match update.download_and_install(|_, _| {}, || {}).await {
                 Ok(()) => app.restart(),
                 Err(_) => "Update failed. Try again".into(),
