@@ -7,8 +7,8 @@ const card = document.getElementById('card');
 
 const DRAG_THRESHOLD_PX = 4;
 const MODELS_SHOWN = 3;
-// The island overshoots a little as it opens and settles, then tucks straight back in when it closes.
-const OPEN_MORPH = { duration: 420, easing: 'cubic-bezier(.3, 1.35, .55, 1)' };
+// Opening starts fast and eases into place; closing is quicker so the island gets out of the way.
+const OPEN_MORPH = { duration: 380, easing: 'cubic-bezier(.2, .9, .3, 1)' };
 const CLOSE_MORPH = { duration: 240, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' };
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const LIMIT_HELP = {

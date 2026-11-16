@@ -28,7 +28,10 @@ const RAISE_EVERY: Duration = Duration::from_secs(1);
 // Windows cuts tray tooltips at 127 characters.
 const TOOLTIP_MAX: usize = 127;
 const AUTOSTART_LABEL: &str = if cfg!(windows) { "Start with Windows" } else { "Open at login" };
-const ISLAND_TOP_GAP: f64 = 8.0;
+const ISLAND_TOP_GAP_PX: f64 = 8.0;
+// Size is saved with the position because the island resizes around its middle:
+// its saved left edge only puts it back in place at the width it had.
+const SAVED_STATE: StateFlags = StateFlags::POSITION.union(StateFlags::SIZE);
 
 #[derive(Serialize, Clone)]
 struct Snapshot {
@@ -92,7 +95,7 @@ fn move_to_top_center(window: &WebviewWindow) {
     let (Ok(Some(screen)), Ok(size)) = (window.current_monitor(), window.outer_size()) else { return };
     let area = screen.work_area();
     let x = area.position.x + (area.size.width as i32 - size.width as i32) / 2;
-    let y = area.position.y + (ISLAND_TOP_GAP * screen.scale_factor()).round() as i32;
+    let y = area.position.y + (ISLAND_TOP_GAP_PX * screen.scale_factor()).round() as i32;
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
@@ -107,13 +110,13 @@ fn start_drag(window: WebviewWindow, shared: tauri::State<Shared>) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
-        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::POSITION).build())
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(SAVED_STATE).build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![snapshot, get_settings, fit, start_drag])
         .on_window_event(|window, event| match event {
             // ponytail: saves on every move event while dragging; debounce if the disk writes ever matter.
             WindowEvent::Moved(_) => {
-                let _ = window.app_handle().save_window_state(StateFlags::POSITION);
+                let _ = window.app_handle().save_window_state(SAVED_STATE);
             }
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
@@ -131,6 +134,17 @@ fn main() {
             let choices = settings::load(&settings_path);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_always_on_top(choices[settings::KEEP_ON_TOP.0])?;
+                // Versions before SAVED_STATE saved no size, so their state restores a 0x0 window,
+                // which never lays out and so never fits itself.
+                let restored = window.inner_size()?;
+                if restored.width == 0 || restored.height == 0 {
+                    if let Some(config) = app.config().app.windows.first() {
+                        // Growing from 0x0 shifts the window, so it goes back to where it was restored.
+                        let at = window.outer_position()?;
+                        window.set_size(LogicalSize::new(config.width, config.height))?;
+                        window.set_position(at)?;
+                    }
+                }
             }
             app.manage(Shared { latest: Mutex::new(None), wake, check_update, settings: Mutex::new(choices), settings_path });
             let update_item = MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?;
@@ -206,7 +220,7 @@ fn build_tray(app: &AppHandle, update_item: &MenuItem<Wry>) -> tauri::Result<Tra
                 let _ = autostart.set_checked(launcher.is_enabled().unwrap_or(false));
             }
             "quit" => {
-                let _ = app.save_window_state(StateFlags::POSITION);
+                let _ = app.save_window_state(SAVED_STATE);
                 app.exit(0);
             }
             id => {
